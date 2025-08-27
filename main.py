@@ -32,22 +32,22 @@ ARQUIVO_LISTA_ASSUNTOS = Path("lista_assuntos.xlsx")
 
 # Anos e semestres fixos
 ANOS_SEMESTRES = [
-    {"ano": 2024, "semestre": 1},
-    {"ano": 2024, "semestre": 2},
-    {"ano": 2023, "semestre": 1},
-    {"ano": 2023, "semestre": 2},
-    {"ano": 2022, "semestre": 2},
-    {"ano": 2020, "semestre": 1},
-    {"ano": 2019, "semestre": 1},
-    {"ano": 2019, "semestre": 2},
-    {"ano": 2018, "semestre": 1},
-    {"ano": 2018, "semestre": 2},
-    {"ano": 2017, "semestre": 1},
-    {"ano": 2017, "semestre": 2},
-    {"ano": 2016, "semestre": 1},
-    {"ano": 2016, "semestre": 2},
     {"ano": 2015, "semestre": 1},
     {"ano": 2015, "semestre": 2},
+    {"ano": 2016, "semestre": 1},
+    {"ano": 2016, "semestre": 2},
+    {"ano": 2017, "semestre": 1},
+    {"ano": 2017, "semestre": 2},
+    {"ano": 2018, "semestre": 1},
+    {"ano": 2018, "semestre": 2},
+    {"ano": 2019, "semestre": 1},
+    {"ano": 2019, "semestre": 2},
+    {"ano": 2020, "semestre": 1},
+    {"ano": 2022, "semestre": 2},
+    {"ano": 2023, "semestre": 1},
+    {"ano": 2023, "semestre": 2},
+    {"ano": 2024, "semestre": 1},
+    {"ano": 2024, "semestre": 2},
     {"ano": 2025, "semestre": 2},
 ]
 
@@ -74,7 +74,6 @@ def carregar_selecoes() -> Dict[Tuple[int, int], Set[str]]:
     """
     Carrega seleções de um arquivo local 'selecoes.json', se existir.
     Estrutura: [{ano, semestre, questao}, ...]
-    Vazio => processar tudo.
     """
     p = Path("selecoes.json")
     if not p.exists():
@@ -87,7 +86,8 @@ def carregar_selecoes() -> Dict[Tuple[int, int], Set[str]]:
         for item in data:
             ano = int(item["ano"])
             semestre = int(item["semestre"])
-            questao = str(item["questao"]).strip()
+            # força número e converte de volta para string sem zeros à esquerda
+            questao = str(int(item["questao"]))
             selecoes.setdefault((ano, semestre), set()).add(questao)
         return selecoes
     except Exception as e:
@@ -105,16 +105,22 @@ def processar_resposta_gemini(
     linhas_classificadas = []
     for linha in resposta.strip().split("\n"):
         linha = linha.strip()
-        if not linha or "|" not in linha or linha.startswith(("numero_questao", "---")):
+        if not linha or "|" not in linha or linha.startswith(("| tema", "|---")):
             continue
         partes = [p.strip() for p in linha.split("|")]
-        if len(partes) >= 3:
-            tema = partes[1] if len(partes) > 1 else ""
-            topico = partes[2] if len(partes) > 2 else ""
-            if tema and topico:
-                linhas_classificadas.append(
-                    {"numero_questao": numero_questao, "tema": tema, "topico": topico}
-                )
+
+        if len(partes) != 5:
+            logging.warning(f"Partes: {partes}")
+            raise ValueError(
+                f"Resposta inesperada para Q{numero_questao}: '{linha}' (esperado 5 colunas, obteve {len(partes)})"
+            )
+
+        tema = partes[2]
+        topico = partes[3]
+        if tema and topico:
+            linhas_classificadas.append(
+                {"numero_questao": numero_questao, "tema": tema, "topico": topico}
+            )
     return linhas_classificadas
 
 
@@ -160,22 +166,36 @@ def classificar_questao(
         ).to_csv(index=False, sep="|")
 
         prompt = f"""
-numero_questao | tema | topico
-Use apenas os tópicos da lista.
+Você deve se comportar como um professor de ensino médio que tem que classificar os assuntos que cada uma das questões enviadas aborda. 
+Você deve analisar o conteúdo da questão e avaliar quais assuntos da lista de assuntos estão presentes na questão. 
+Vou te enviar o texto da questão e você deve responder apenas com os temas e tópicos da lista de assuntos que a questão aborda.
+Sua resposta deve estar no formato de tabela com as colunas: 
+| tema | topico 
 
-Lista de assuntos:
+Sua resposta não deve conter nenhuma outra informação além da tabela.
+Sua resposta não deve conter `````, nem qualquer outra coisa que não seja a tabela.
+Exemplo de resposta correta:
+| tema | topico |
+|---|---|
+| Grandezas físicas | Medição de tempo |
+| Eletrodinâmica | Corrente elétrica |
+| Eletrostática | Carga elétrica |
+
+Uma questão pode abordar mais de um tópico, nesse caso cada tópico deve ser uma linha. Você não deve inventar novos tópicos deve usar apenas os tópicos presentes na lista. 
+Você deve usar apenas as colunas tema e topico da lista de assuntos.
+A lista de assuntos é:
 {assuntos_str}
 
 Questão:
 {texto_questao}
 """.strip()
-
         logging.info(
             f"Enviando Q{numero_questao} ({ano}/{semestre}) para classificação"
         )
         response = client.models.generate_content(
             model="gemini-2.5-flash", contents=prompt
         )
+        print(response.text)
         classificacoes = processar_resposta_gemini(response.text, numero_questao)
         return classificacoes, materia_questao, gabarito_questao
     except Exception as e:
@@ -201,27 +221,55 @@ def listar_arquivos_para_processar(
     pasta: Path, ano: int, semestre: int, selecoes: Dict[Tuple[int, int], Set[str]]
 ) -> List[str]:
     if not pasta.exists():
+        logging.info("Pasta não encontrada")
         return []
 
+    # Lista todos os arquivos válidos
     todos = [
         f
         for f in os.listdir(pasta)
         if f.lower().endswith(EXTENSOES) and (pasta / f).is_file()
     ]
 
+    # Há seleções globais em selecoes.json?
+    ha_selecoes_globais = any(len(s) > 0 for s in selecoes.values())
+
+    # Seleções específicas para este (ano, semestre)
     chaves = selecoes.get((ano, semestre), set())
-    if not chaves:
+
+    # Se há seleções globais e este (ano, semestre) não está nelas -> ignorar totalmente
+    if ha_selecoes_globais and not chaves:
+        logging.info(
+            f"Ignorando {ano}/{semestre} porque não está no selecoes.json (modo seleção ativo)."
+        )
+        return []
+
+    # Sem seleções globais -> processa tudo (comportamento normal)
+    if not ha_selecoes_globais:
+        logging.info(
+            f"Processando todas as questões de {ano}/{semestre} (sem seleções definidas)."
+        )
         return todos
 
-    base_por_numero: Dict[str, List[str]] = {}
-    for f in todos:
-        numero = Path(f).stem.strip()
-        base_por_numero.setdefault(numero, []).append(f)
+    # Modo seleção ativo E existem chaves para este (ano, semestre):
+    # processar apenas as questões listadas
+    def normaliza_nome(stem: str) -> str:
+        return str(int(stem)) if stem.isdigit() else stem.strip()
 
     filtrados: List[str] = []
-    for q in chaves:
-        q_str = str(q).strip()
-        filtrados.extend(base_por_numero.get(q_str, []))
+    for f in todos:
+        nome = Path(f).stem
+        if normaliza_nome(nome) in chaves:
+            filtrados.append(f)
+
+    if not filtrados:
+        logging.info(
+            f"Nenhum arquivo correspondente às seleções {sorted(chaves)} em {ano}/{semestre}."
+        )
+    else:
+        logging.info(
+            f"Processando {len(filtrados)} questão(ões) selecionada(s) em {ano}/{semestre}: {sorted(chaves)}"
+        )
 
     return filtrados
 
