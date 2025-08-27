@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "classificar-temas-questoes"
+version = "0.1.0"
+description = ""
+authors = ["olv-leo <olv.leo@outlook.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pytesseract = "^0.3.13"
+pillow = "^11.3.0"
+numpy = "^2.3.2"
+pandas = "^2.3.2"
+google = "^3.0.0"
+google-genai = "^1.31.0"
+openpyxl = "^3.1.5"
+python-dotenv = "^1.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
